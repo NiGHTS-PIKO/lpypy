@@ -1,47 +1,74 @@
-from flask import Flask, Response
 import cv2
 import datetime
+import subprocess
+import time
 
-app = Flask(__name__)
+# 解像度・FPS設定
+WIDTH, HEIGHT = 1280, 720
+CAMERA_ID = 0
+TARGET_FPS = 15
 
-camera = cv2.VideoCapture("/dev/video0")
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# カメラ初期化
+cap = cv2.VideoCapture(CAMERA_ID)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # MJPEG圧縮有効
 
-def generate_frames():
-    while True:
-        success, frame = camera.read()
-        if not success:
-            break
+# FFmpegコマンド（高速化＋低レイテンシ最適化）
+ffmpeg_cmd = [
+    'ffmpeg',
+    '-y',
+    '-f', 'rawvideo',
+    '-pix_fmt', 'bgr24',
+    '-s', f'{WIDTH}x{HEIGHT}',
+    '-r', str(TARGET_FPS),
+    '-i', '-',
+    '-vcodec', 'libx264',
+    '-preset', 'ultrafast',
+    '-tune', 'zerolatency',
+    '-threads', '2',
+    '-fps_mode', 'passthrough',
+    '-g', '10',
+    '-keyint_min', '10',
+    '-analyzeduration', '0',
+    '-fflags', 'nobuffer',
+    '-f', 'rtsp',
+    'rtsp://100.101.30.82:8555/live.stream'
+]
 
-        # リアルタイム日時取得
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# FFmpeg起動
+process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 
-        # 日時の描画設定（少し小さめ & 右下）
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.2
-        font_thickness = 2
-        time_text = now
-        time_size = cv2.getTextSize(time_text, font, font_scale, font_thickness)[0]
+while True:
+    start = time.time()
 
-        # 右下に配置
-        x = frame.shape[1] - time_size[0] - 10
-        y = frame.shape[0] - 10
-        cv2.putText(frame, time_text,
-                    (x, y),
-                    font, font_scale, (0, 255, 0), font_thickness)
+    ret, frame = cap.read()
+    if not ret:
+        print("フレームの取得に失敗しました")
+        break
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
+    # 日時文字列生成
+    now_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.5
+    color = (0, 255, 0)
+    thickness = 3
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    (text_w, text_h), _ = cv2.getTextSize(now_text, font, font_scale, thickness)
+    x = frame.shape[1] - text_w - 10
+    y = frame.shape[0] - 10
+    cv2.putText(frame, now_text, (x, y), font, font_scale, color, thickness)
 
-@app.route('/')
-def video_feed():
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+    # FFmpegに送信
+    process.stdin.write(frame.tobytes())
 
-if __name__ == '__main__':
-    print("[INFO] MJPEGストリーム配信中： http://0.0.0.0:8080/")
-    app.run(host='0.0.0.0', port=8080)
+    # FPS調整
+    elapsed = time.time() - start
+    sleep = max(0, (1.0 / TARGET_FPS) - elapsed)
+    time.sleep(sleep)
+
+# 後処理
+cap.release()
+process.stdin.close()
+process.wait()
