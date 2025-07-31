@@ -6,7 +6,7 @@ import time
 # 解像度・FPS設定
 WIDTH, HEIGHT = 1280, 720
 CAMERA_ID = 0
-TARGET_FPS = 15
+TARGET_FPS = 10
 
 # カメラ初期化
 cap = cv2.VideoCapture(CAMERA_ID)
